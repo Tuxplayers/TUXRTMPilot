@@ -1,43 +1,34 @@
-# Python
+# === Python ===
 __pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-dist/
-build/
-
-# Virtual Environment
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.tmp
+*.bak
+.env
+.venv
 venv/
-ENV/
 env/
 
-# IDE
-.vscode/settings.json
-.idea/
+# === PyQt UI Cache ===
+*.ui~
+*.qmlc
+*.jsc
+*.qrc
 
-# Secrets
-.env
-*_streamkey.txt
-stream_keys/
-secrets/
-
-# Backups & Scratch
+# === Backups & Local Data ===
 backups/
-scratch/
-tmp/
-temp/
-*_backup.py
-*_old.py
-*_test.py
+STATUS.md
+*.swp
+*.swo
 
-# Logs
-*.log
-logs/
-recordings/
-
-# OS
+# === Build & System ===
+build/
+dist/
+*.spec
 .DS_Store
-Thumbs.db
 
-# Test Cache
-.pytest_cache/
+# === VSCode & IDE ===
+.vscode/
+.idea/
