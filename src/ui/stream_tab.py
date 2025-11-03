@@ -258,6 +258,20 @@ class StreamTab(QWidget):
         self.stop_button.setEnabled(False)
         layout.addWidget(self.stop_button)
 
+        # Separator
+        layout.addSpacing(10)
+
+        # Recording starten Button
+        self.record_button = QPushButton("🎥 Aufnahme starten")
+        self.record_button.setMinimumHeight(40)
+        layout.addWidget(self.record_button)
+
+        # Recording stoppen Button
+        self.record_stop_button = QPushButton("⏹️ Aufnahme stoppen")
+        self.record_stop_button.setMinimumHeight(40)
+        self.record_stop_button.setEnabled(False)
+        layout.addWidget(self.record_stop_button)
+
         return group
 
     def _create_preview_group(self) -> QGroupBox:
@@ -458,6 +472,10 @@ class StreamTab(QWidget):
         self.start_button.clicked.connect(self._on_start_stream)
         self.stop_button.clicked.connect(self._on_stop_stream)
         self.preview_button.clicked.connect(self._on_preview_toggle)
+
+        # Recording-Buttons
+        self.record_button.clicked.connect(self._on_start_recording)
+        self.record_stop_button.clicked.connect(self._on_stop_recording)
 
         # Config speichern bei Änderungen
         self.video_combo.currentIndexChanged.connect(self._save_config)
@@ -674,6 +692,38 @@ class StreamTab(QWidget):
         # TODO: Verschlüsselte Speicherung über keyring (Phase 4)
 
         self.config.save_config()
+
+    def _on_start_recording(self) -> None:
+        """Handler für Recording-Start."""
+        self.add_log("🎥 Aufnahme startet...")
+
+        # Config holen
+        config = self._get_stream_config()
+
+        # Recording starten
+        success = self.stream_manager.start_recording(
+            video_source=config['video_source'],
+            audio_source=config['audio_source'],
+            resolution=config['resolution'],
+            bitrate=config['bitrate'],
+            fps=30
+        )
+
+        if success:
+            # UI-Status aktualisieren
+            self.record_button.setEnabled(False)
+            self.record_stop_button.setEnabled(True)
+
+    def _on_stop_recording(self) -> None:
+        """Handler für Recording-Stop."""
+        self.add_log("⏹️ Aufnahme wird gestoppt...")
+
+        # Recording stoppen
+        self.stream_manager.stop_recording()
+
+        # UI-Status aktualisieren
+        self.record_button.setEnabled(True)
+        self.record_stop_button.setEnabled(False)
 
     def add_log(self, message: str) -> None:
         """

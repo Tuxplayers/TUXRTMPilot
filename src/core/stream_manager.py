@@ -86,10 +86,12 @@ class StreamManager(QObject):
         self.is_streaming = False
         self.is_preview_active = False
         self.preview_was_active_before_stream = False
+        self.is_recording = False
 
         # Current Stream Config
         self.current_config: Dict[str, Any] = {}
         self.current_preview_config: Dict[str, Any] = {}
+        self.current_recording_config: Dict[str, Any] = {}
 
         # Besten verfügbaren AAC-Encoder finden
         self.aac_encoder = self._find_best_aac_encoder()
@@ -584,9 +586,16 @@ class StreamManager(QObject):
 
         if msg_type == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
-            self.error_signal.emit(f"❌ Preview-Fehler: {err.message}")
-            print(f"🔹 Preview Debug: {debug}")
-            self.stop_preview()
+
+            # Preview-Fenster wurde geschlossen - das ist normal, kein Fehler!
+            if "Output window was closed" in err.message:
+                self.status_signal.emit("✅ Preview geschlossen")
+                self.stop_preview()
+            else:
+                # Echter Fehler
+                self.error_signal.emit(f"❌ Preview-Fehler: {err.message}")
+                print(f"🔹 Preview Debug: {debug}")
+                self.stop_preview()
 
         elif msg_type == Gst.MessageType.WARNING:
             warn, debug = message.parse_warning()
@@ -603,9 +612,204 @@ class StreamManager(QObject):
 
         return True
 
+    # ==================== RECORDING FUNKTIONEN ====================
+
+    def start_recording(
+        self,
+        video_source: str,
+        audio_source: str = "default",
+        resolution: str = "1280x720",
+        bitrate: int = 2500,
+        fps: int = 30,
+        output_dir: str = "recordings"
+    ) -> bool:
+        """
+        Startet lokale Video-Aufnahme (nur Webcam).
+
+        Args:
+            video_source: Video-Quelle (z.B. '/dev/video0')
+            audio_source: Audio-Quelle ('default' oder 'monitor')
+            resolution: Auflösung (z.B. "1280x720")
+            bitrate: Video-Bitrate in kbps
+            fps: Framerate
+            output_dir: Ausgabeverzeichnis für Recordings
+
+        Returns:
+            True bei Erfolg, False bei Fehler
+        """
+        if self.is_recording:
+            self.error_signal.emit("⚠️ Recording läuft bereits!")
+            return False
+
+        if video_source == 'screen':
+            self.error_signal.emit("❌ Desktop-Recording noch nicht verfügbar! Bitte Webcam wählen.")
+            return False
+
+        # Preview läuft? → Stoppen (Gerät würde sonst belegt sein)
+        if self.is_preview_active:
+            print("🔹 Preview läuft - stoppe Preview für Recording")
+            self.stop_preview()
+
+        # Recording-Config speichern
+        import os
+        from datetime import datetime
+
+        # Erstelle Recordings-Ordner
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Dateiname mit Timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"recording_{timestamp}.mkv"
+        filepath = os.path.join(output_dir, filename)
+
+        self.current_recording_config = {
+            'video_source': video_source,
+            'audio_source': audio_source,
+            'resolution': resolution,
+            'bitrate': bitrate,
+            'fps': fps,
+            'filepath': filepath
+        }
+
+        try:
+            self.status_signal.emit("🔄 Erstelle Recording-Pipeline...")
+            width, height = resolution.split('x')
+
+            # Video-Source (nur Webcam)
+            video_src = f"v4l2src device={video_source}"
+
+            # Audio-Source
+            if audio_source == 'monitor':
+                audio_src = "pulsesrc"
+            else:
+                audio_src = "autoaudiosrc"
+
+            # Recording-Pipeline (nur Video erstmal - einfacher)
+            pipeline_str = (
+                # Video-Branch
+                f"{video_src} ! "
+                f"videoconvert ! "
+                f"videoscale ! "
+                f"video/x-raw,width={width},height={height},framerate={fps}/1 ! "
+                f"x264enc bitrate={bitrate} speed-preset=medium ! "
+                f"video/x-h264,profile=high ! "
+                f"h264parse ! "
+                f"matroskamux name=mux ! "
+                f"filesink location=\"{filepath}\""
+            )
+
+            print(f"🔹 Recording-Pipeline: {pipeline_str}")
+            self.pipeline = Gst.parse_launch(pipeline_str)
+
+            # Bus-Watcher
+            bus = self.pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", self._on_recording_bus_message)
+
+            # GStreamer-Thread starten
+            self.gst_thread = GStreamerThread()
+            self.gst_thread.start()
+
+            # Pipeline starten
+            self.status_signal.emit("🎥 Starte Recording...")
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+
+            if ret == Gst.StateChangeReturn.FAILURE:
+                self.error_signal.emit("❌ Recording konnte nicht gestartet werden!")
+                self._cleanup_pipeline()
+                return False
+
+            self.is_recording = True
+            self.status_signal.emit(f"✅ Recording läuft! → {filepath}")
+            return True
+
+        except Exception as e:
+            self.error_signal.emit(f"❌ Fehler beim Recording-Start: {e}")
+            self._cleanup_pipeline()
+            return False
+
+    def stop_recording(self) -> bool:
+        """
+        Stoppt die laufende Aufnahme.
+
+        Returns:
+            True bei Erfolg, False bei Fehler
+        """
+        if not self.is_recording:
+            self.error_signal.emit("⚠️ Kein Recording aktiv!")
+            return False
+
+        try:
+            self.status_signal.emit("⏹️ Stoppe Recording...")
+
+            # EOS senden für sauberen Abschluss
+            if self.pipeline:
+                print("🔹 Sende EOS an Pipeline...")
+                self.pipeline.send_event(Gst.Event.new_eos())
+
+                # Warte auf EOS-Verarbeitung (max 10 Sekunden)
+                print("🔹 Warte auf EOS...")
+                bus = self.pipeline.get_bus()
+                msg = bus.timed_pop_filtered(
+                    10 * Gst.SECOND,
+                    Gst.MessageType.EOS | Gst.MessageType.ERROR
+                )
+
+                if msg:
+                    if msg.type == Gst.MessageType.EOS:
+                        print("🔹 EOS empfangen - Datei wird finalisiert...")
+                    elif msg.type == Gst.MessageType.ERROR:
+                        err, debug = msg.parse_error()
+                        print(f"🔹 Fehler beim EOS: {err.message}")
+                else:
+                    print("⚠️ Kein EOS empfangen - Timeout!")
+
+                # Pipeline auf NULL
+                print("🔹 Setze Pipeline auf NULL...")
+                self.pipeline.set_state(Gst.State.NULL)
+
+            # Cleanup
+            self._cleanup_pipeline()
+
+            filepath = self.current_recording_config.get('filepath', 'unknown')
+            self.is_recording = False
+            self.status_signal.emit(f"✅ Recording gespeichert: {filepath}")
+            return True
+
+        except Exception as e:
+            self.error_signal.emit(f"❌ Fehler beim Recording-Stoppen: {e}")
+            return False
+
+    def _on_recording_bus_message(self, bus: Gst.Bus, message: Gst.Message) -> bool:
+        """Callback für Recording-Pipeline-Bus-Messages."""
+        msg_type = message.type
+
+        if msg_type == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
+            self.error_signal.emit(f"❌ Recording-Fehler: {err.message}")
+            print(f"🔹 Recording Debug: {debug}")
+            self.stop_recording()
+
+        elif msg_type == Gst.MessageType.WARNING:
+            warn, debug = message.parse_warning()
+            self.status_signal.emit(f"⚠️ Recording-Warnung: {warn.message}")
+
+        elif msg_type == Gst.MessageType.EOS:
+            self.status_signal.emit("ℹ️ Recording beendet (EOS)")
+            # Nicht stop_recording() aufrufen, da wir bereits im Stopp-Prozess sind
+
+        elif msg_type == Gst.MessageType.STATE_CHANGED:
+            if message.src == self.pipeline:
+                old_state, new_state, pending = message.parse_state_changed()
+                print(f"🔹 Recording: {old_state.value_nick} → {new_state.value_nick}")
+
+        return True
+
     def __del__(self):
         """Destruktor - stellt sicher dass Pipeline sauber beendet wird."""
         if self.is_streaming:
             self.stop_stream()
         elif self.is_preview_active:
             self.stop_preview()
+        elif self.is_recording:
+            self.stop_recording()
