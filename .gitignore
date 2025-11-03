@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Secrets
+.env
+*_streamkey.txt
+stream_keys/
+secrets/
+
+# Backups & Scratch
+backups/
+scratch/
+tmp/
+temp/
+*_backup.py
+*_old.py
+*_test.py
+
+# Logs
+*.log
+logs/
+recordings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test Cache
+.pytest_cache/
